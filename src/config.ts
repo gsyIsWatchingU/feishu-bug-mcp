@@ -24,12 +24,22 @@ const REQUIRED_ENV_VARS = [
   "FEISHU_APP_ID",
   "FEISHU_APP_SECRET",
   "FEISHU_APP_TOKEN",
-  "FEISHU_TABLE_ID",
-  "FEISHU_FIELD_ID",
-  "FEISHU_FIELD_TITLE",
-  "FEISHU_FIELD_STATUS",
-  "FEISHU_FIELD_PRIORITY"
+  "FEISHU_TABLE_ID"
 ] as const;
+
+const DEFAULT_FIELD_NAMES = {
+  bugId: "编号",
+  title: "Bug问题描述",
+  status: "解决状态",
+  priority: "优先级",
+  module: "功能模块",
+  createdAt: "提交时间",
+  resolvedAt: "解决日期",
+  verificationResult: "验证结果",
+  verificationTime: "验证时间",
+  comment: "备注",
+  remark: "备注"
+} as const;
 
 function requireEnv(name: string): string {
   const value = process.env[name]?.trim();
@@ -42,6 +52,10 @@ function requireEnv(name: string): string {
 function optionalEnv(name: string): string | undefined {
   const value = process.env[name]?.trim();
   return value ? value : undefined;
+}
+
+function envOrDefault(name: string, fallback: string): string {
+  return optionalEnv(name) ?? fallback;
 }
 
 function loadDotEnvFile(): void {
@@ -87,12 +101,12 @@ export function loadConfig(): EnvConfig {
     viewId: optionalEnv("FEISHU_VIEW_ID"),
     baseUrl: optionalEnv("FEISHU_BASE_URL") ?? "https://open.feishu.cn/open-apis",
     fieldMapping: {
-      bugId: requireEnv("FEISHU_FIELD_ID"),
-      title: requireEnv("FEISHU_FIELD_TITLE"),
-      status: requireEnv("FEISHU_FIELD_STATUS"),
-      priority: requireEnv("FEISHU_FIELD_PRIORITY"),
+      bugId: envOrDefault("FEISHU_FIELD_ID", DEFAULT_FIELD_NAMES.bugId),
+      title: envOrDefault("FEISHU_FIELD_TITLE", DEFAULT_FIELD_NAMES.title),
+      status: envOrDefault("FEISHU_FIELD_STATUS", DEFAULT_FIELD_NAMES.status),
+      priority: envOrDefault("FEISHU_FIELD_PRIORITY", DEFAULT_FIELD_NAMES.priority),
       severity: optionalEnv("FEISHU_FIELD_SEVERITY"),
-      module: optionalEnv("FEISHU_FIELD_MODULE"),
+      module: optionalEnv("FEISHU_FIELD_MODULE") ?? DEFAULT_FIELD_NAMES.module,
       repoHint: optionalEnv("FEISHU_FIELD_REPO_HINT"),
       description: optionalEnv("FEISHU_FIELD_DESCRIPTION"),
       reproSteps: optionalEnv("FEISHU_FIELD_REPRO_STEPS"),
@@ -100,9 +114,15 @@ export function loadConfig(): EnvConfig {
       actualResult: optionalEnv("FEISHU_FIELD_ACTUAL_RESULT"),
       assignee: optionalEnv("FEISHU_FIELD_ASSIGNEE"),
       attachments: optionalEnv("FEISHU_FIELD_ATTACHMENTS"),
-      createdAt: optionalEnv("FEISHU_FIELD_CREATED_AT"),
+      createdAt: optionalEnv("FEISHU_FIELD_CREATED_AT") ?? DEFAULT_FIELD_NAMES.createdAt,
       updatedAt: optionalEnv("FEISHU_FIELD_UPDATED_AT"),
-      comment: optionalEnv("FEISHU_FIELD_COMMENT")
+      resolvedAt: optionalEnv("FEISHU_FIELD_RESOLVED_AT") ?? DEFAULT_FIELD_NAMES.resolvedAt,
+      verificationResult:
+        optionalEnv("FEISHU_FIELD_VERIFICATION_RESULT") ?? DEFAULT_FIELD_NAMES.verificationResult,
+      verificationTime:
+        optionalEnv("FEISHU_FIELD_VERIFICATION_TIME") ?? DEFAULT_FIELD_NAMES.verificationTime,
+      remark: optionalEnv("FEISHU_FIELD_REMARK") ?? DEFAULT_FIELD_NAMES.remark,
+      comment: optionalEnv("FEISHU_FIELD_COMMENT") ?? DEFAULT_FIELD_NAMES.comment
     },
     statusWhitelist: [...BUG_STATUS_VALUES]
   };

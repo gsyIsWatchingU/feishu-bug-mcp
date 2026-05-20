@@ -20,6 +20,10 @@ export type FeishuFieldMapping = {
   attachments?: string;
   createdAt?: string;
   updatedAt?: string;
+  resolvedAt?: string;
+  verificationResult?: string;
+  verificationTime?: string;
+  remark?: string;
   comment?: string;
 };
 
@@ -68,6 +72,10 @@ export type NormalizedBug = {
   attachments: string[];
   created_at: string | null;
   updated_at: string | null;
+  resolved_at: string | null;
+  verification_result: string | null;
+  verification_time: string | null;
+  remark: string | null;
   raw_fields: Record<string, unknown>;
 };
 

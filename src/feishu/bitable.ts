@@ -150,6 +150,15 @@ export class FeishuBitableClient {
       attachments: this.getAttachmentNames(record.fields, fieldMapping.attachments),
       created_at: this.getOptionalMappedValue(record.fields, fieldMapping.createdAt),
       updated_at: this.getOptionalMappedValue(record.fields, fieldMapping.updatedAt),
+      resolved_at: this.getOptionalMappedValue(record.fields, fieldMapping.resolvedAt),
+      verification_result: this.getOptionalMappedValue(
+        record.fields,
+        fieldMapping.verificationResult
+      ),
+      verification_time: this.getOptionalMappedValue(record.fields, fieldMapping.verificationTime),
+      remark:
+        this.getOptionalMappedValue(record.fields, fieldMapping.remark) ??
+        this.getOptionalMappedValue(record.fields, fieldMapping.comment),
       raw_fields: record.fields
     };
   }
