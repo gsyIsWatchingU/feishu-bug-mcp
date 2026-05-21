@@ -389,14 +389,41 @@ export function registerFixBugsTool(
             };
 
             let commentParts: string[] = [];
+            
+            const bugType = bug.description?.toLowerCase() || "";
+            let errorReason = "";
+            let fixPlan = "";
+            
+            if (bugType.includes("内存泄漏")) {
+              errorReason = "错误原因：代码中使用了 setInterval/setTimeout 但未正确清理，导致内存泄漏";
+              fixPlan = "修复方案：在类的析构函数中添加 clearInterval/clearTimeout 调用";
+            } else if (bugType.includes("空指针") || bugType.includes("null")) {
+              errorReason = "错误原因：对象可能为 null/undefined 时直接访问属性，导致空指针异常";
+              fixPlan = "修复方案：添加可选链操作符 (?.) 或空值检查";
+            } else if (bugType.includes("未定义") || bugType.includes("undefined")) {
+              errorReason = "错误原因：访问未定义变量或属性";
+              fixPlan = "修复方案：添加 undefined 检查，使用默认值保护";
+            } else if (bugType.includes("无限循环")) {
+              errorReason = "错误原因：循环条件可能永远为真，导致无限循环";
+              fixPlan = "修复方案：检查循环条件，添加终止条件";
+            } else {
+              errorReason = `错误原因：${bug.title || bug.description || "未明确"}`;
+              fixPlan = "修复方案：自动修复未匹配到已知模式，建议手动检查";
+            }
+            
             if (typeof resolution_summary === "string") {
               commentParts.push(resolution_summary);
             }
-            if (fixDetails) {
-              commentParts.push(`代码修复详情:\n${fixDetails}`);
-            }
+            
             if (affectedFiles.length > 0) {
-              commentParts.push(`影响文件:\n${affectedFiles.map(f => `- ${path.basename(f)}`).join("\n")}`);
+              commentParts.push(`**修复涉及文件:**\n${affectedFiles.map(f => `- ${path.basename(f)}`).join("\n")}`);
+            }
+            
+            commentParts.push(`**错误原因:**\n${errorReason}`);
+            commentParts.push(`**修复方案:**\n${fixPlan}`);
+            
+            if (fixDetails) {
+              commentParts.push(`**详细修复记录:**\n${fixDetails}`);
             }
 
             if (commentParts.length > 0 && config.fieldMapping.comment) {
