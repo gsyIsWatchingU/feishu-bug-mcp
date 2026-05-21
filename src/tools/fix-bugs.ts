@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { AppConfig } from "../config.js";
+import { FeishuAiClient } from "../feishu/ai.js";
 import { FeishuBitableClient } from "../feishu/bitable.js";
 import {
   buildErrorResponse,
@@ -13,6 +14,7 @@ import * as fs from "fs";
 import * as path from "path";
 
 const FIXED_STATUS = "\u5df2\u4fee\u590d\u5f85\u9a8c\u8bc1";
+const REVIEW_STATUS = "\u5f85\u5ba1\u67e5";
 
 interface BugFixResult {
   bug_id: string;
@@ -23,6 +25,8 @@ interface BugFixResult {
   code_fix_applied?: boolean;
   fix_details?: string;
   affected_files?: string[];
+  ai_expanded?: boolean;
+  status_set?: string;
 }
 
 function searchCodebase(searchDir: string, keywords: string[]): string[] {
@@ -279,22 +283,24 @@ function analyzeAndFixBug(bug: NormalizedBug, searchDir: string): {
 export function registerFixBugsTool(
   server: McpServer,
   config: AppConfig,
-  bitableClient: FeishuBitableClient
+  bitableClient: FeishuBitableClient,
+  aiClient: FeishuAiClient
 ): void {
   server.registerTool(
     "fix_bugs",
     {
-      description: "Batch fix bugs by bug IDs or index range. Reads bug descriptions, searches codebase for related files, attempts code fixes, and sets bug status to '已修复待验证'.",
+      description: "Batch fix bugs by bug IDs or index range. Reads bug descriptions, searches codebase for related files, attempts code fixes, and sets bug status to '已修复待验证' or '待审查'.",
       inputSchema: {
         bug_ids: z.array(z.string()).optional().describe("Array of bug IDs to fix"),
         start_index: z.number().int().min(1).optional().describe("Start index for range fix"),
         end_index: z.number().int().min(1).optional().describe("End index for range fix"),
         resolution_summary: z.string().optional().describe("Summary of the fix for all bugs"),
         code_fix_enabled: z.boolean().optional().default(true).describe("Whether to enable automatic code fixing"),
-        search_directory: z.string().optional().describe("Directory to search for code files (defaults to current working directory)")
+        search_directory: z.string().optional().describe("Directory to search for code files (defaults to current working directory)"),
+        ai_expand_enabled: z.boolean().optional().default(true).describe("Whether to enable AI expansion of bug descriptions")
       }
     },
-    async ({ bug_ids, start_index: startIndex, end_index: endIndex, resolution_summary, code_fix_enabled = true, search_directory }) => {
+    async ({ bug_ids, start_index: startIndex, end_index: endIndex, resolution_summary, code_fix_enabled = true, search_directory, ai_expand_enabled = true }) => {
       if (!bug_ids && (!startIndex || !endIndex)) {
         return toToolPayload(
           buildErrorResponse(config, {
@@ -365,8 +371,17 @@ export function registerFixBugsTool(
             let fixDetails = "";
             let affectedFiles: string[] = [];
 
+            let expandedDescription = bug.description || bug.title || "";
+            if (ai_expand_enabled && (bug.title || bug.description)) {
+              expandedDescription = await aiClient.expandBugDescription(
+                bug.title || "",
+                bug.description || undefined
+              );
+            }
+
             if (code_fix_enabled) {
-              const fixResult = analyzeAndFixBug(bug, searchDir);
+              const bugWithExpandedDesc = { ...bug, description: expandedDescription };
+              const fixResult = analyzeAndFixBug(bugWithExpandedDesc, searchDir);
               codeFixApplied = fixResult.fixApplied;
               fixDetails = fixResult.fixDetails;
               affectedFiles = fixResult.affectedFiles;
@@ -384,13 +399,27 @@ export function registerFixBugsTool(
               continue;
             }
 
+            const bugType = expandedDescription.toLowerCase();
+            const isKnownPattern = bugType.includes("内存泄漏") || 
+                                   bugType.includes("空指针") || 
+                                   bugType.includes("null") || 
+                                   bugType.includes("未定义") || 
+                                   bugType.includes("undefined") || 
+                                   bugType.includes("无限循环");
+
+            const isFixApplied = code_fix_enabled && codeFixApplied;
+            const statusToSet = isFixApplied ? FIXED_STATUS : (isKnownPattern ? FIXED_STATUS : REVIEW_STATUS);
+
             const fieldsToUpdate: Record<string, unknown> = {
-              [config.fieldMapping.status]: FIXED_STATUS
+              [config.fieldMapping.status]: statusToSet
             };
+
+            if (config.fieldMapping.description && expandedDescription !== bug.description) {
+              fieldsToUpdate[config.fieldMapping.description] = expandedDescription;
+            }
 
             let commentParts: string[] = [];
             
-            const bugType = bug.description?.toLowerCase() || "";
             let errorReason = "";
             let fixPlan = "";
             
@@ -413,6 +442,10 @@ export function registerFixBugsTool(
             
             if (typeof resolution_summary === "string") {
               commentParts.push(resolution_summary);
+            }
+            
+            if (ai_expand_enabled) {
+              commentParts.push(`**AI扩写描述:**\n${expandedDescription.substring(0, 500)}${expandedDescription.length > 500 ? "..." : ""}`);
             }
             
             if (affectedFiles.length > 0) {
@@ -443,7 +476,9 @@ export function registerFixBugsTool(
               success: true,
               code_fix_applied: codeFixApplied,
               fix_details: fixDetails,
-              affected_files: affectedFiles.map(f => path.basename(f))
+              affected_files: affectedFiles.map(f => path.basename(f)),
+              ai_expanded: ai_expand_enabled,
+              status_set: statusToSet
             });
           } catch (error) {
             results.push({

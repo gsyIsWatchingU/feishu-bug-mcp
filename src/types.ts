@@ -2,7 +2,8 @@ export type BugStatus =
   | "处理中"
   | "已修复待验证"
   | "无法复现"
-  | "需人工确认";
+  | "需人工确认"
+  | "待审查";
 
 export type FeishuFieldMapping = {
   bugId: string;

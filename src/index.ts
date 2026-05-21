@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { loadConfig } from "./config.js";
+import { FeishuAiClient } from "./feishu/ai.js";
 import { FeishuAuthClient } from "./feishu/auth.js";
 import { FeishuBitableClient } from "./feishu/bitable.js";
 import { registerListBugsTool } from "./tools/list-bugs.js";
@@ -12,6 +13,7 @@ async function main(): Promise<void> {
   const config = loadConfig();
   const authClient = new FeishuAuthClient(config);
   const bitableClient = new FeishuBitableClient(config, authClient);
+  const aiClient = new FeishuAiClient(config, authClient);
 
   const server = new McpServer({
     name: "feishu-bug-mcp",
@@ -19,7 +21,7 @@ async function main(): Promise<void> {
   });
 
   registerListBugsTool(server, config, bitableClient);
-  registerFixBugsTool(server, config, bitableClient);
+  registerFixBugsTool(server, config, bitableClient, aiClient);
   registerUpdateBugStatusTool(server, config, bitableClient);
   registerCheckDuplicateBugsTool(server, config, bitableClient);
 

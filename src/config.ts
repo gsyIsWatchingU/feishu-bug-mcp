@@ -6,7 +6,8 @@ const BUG_STATUS_VALUES = [
   "\u5904\u7406\u4e2d",
   "\u5df2\u4fee\u590d\u5f85\u9a8c\u8bc1",
   "\u65e0\u6cd5\u590d\u73b0",
-  "\u9700\u4eba\u5de5\u786e\u8ba4"
+  "\u9700\u4eba\u5de5\u786e\u8ba4",
+  "\u5f85\u5ba1\u67e5"
 ] as const;
 
 type EnvConfig = {
