@@ -5,6 +5,7 @@ import {
   ListBugFilters,
   NormalizedBug
 } from "../types.js";
+import { FeishuApiError } from "./api-error.js";
 import { FeishuAuthClient } from "./auth.js";
 
 type FeishuListResponse = {
@@ -255,7 +256,7 @@ export class FeishuBitableClient {
     if (pageToken) {
       url.searchParams.set("page_token", pageToken);
     }
-    url.searchParams.set("page_size", "500");
+    url.searchParams.set("page_size", "100");
     return url.toString();
   }
 
@@ -275,9 +276,43 @@ export class FeishuBitableClient {
     });
 
     if (!response.ok) {
-      throw new Error(`Feishu API request failed with status ${response.status}`);
+      const payload = await this.safeParseJson(response);
+      const message =
+        this.extractMessage(payload) ?? `Feishu API request failed with status ${response.status}`;
+      throw new FeishuApiError(message, {
+        status: response.status,
+        responseCode: this.extractCode(payload),
+        responseBody: payload
+      });
     }
 
     return (await response.json()) as T;
+  }
+
+  private async safeParseJson(response: Response): Promise<unknown> {
+    try {
+      return await response.json();
+    } catch {
+      return await response.text();
+    }
+  }
+
+  private extractMessage(payload: unknown): string | undefined {
+    if (!payload || typeof payload !== "object") {
+      return undefined;
+    }
+
+    const message = (payload as { msg?: unknown; message?: unknown }).msg ??
+      (payload as { msg?: unknown; message?: unknown }).message;
+    return typeof message === "string" && message.trim().length > 0 ? message : undefined;
+  }
+
+  private extractCode(payload: unknown): number | undefined {
+    if (!payload || typeof payload !== "object") {
+      return undefined;
+    }
+
+    const code = (payload as { code?: unknown }).code;
+    return typeof code === "number" ? code : undefined;
   }
 }

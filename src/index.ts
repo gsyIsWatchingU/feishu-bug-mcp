@@ -3,11 +3,10 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { loadConfig } from "./config.js";
 import { FeishuAuthClient } from "./feishu/auth.js";
 import { FeishuBitableClient } from "./feishu/bitable.js";
-import { registerAppendBugCommentTool } from "./tools/append-bug-comment.js";
-import { registerGetBugDetailTool } from "./tools/get-bug-detail.js";
-import { registerGetBugRangeTool } from "./tools/get-bug-range.js";
 import { registerListBugsTool } from "./tools/list-bugs.js";
+import { registerFixBugsTool } from "./tools/fix-bugs.js";
 import { registerUpdateBugStatusTool } from "./tools/update-bug-status.js";
+import { registerCheckDuplicateBugsTool } from "./tools/check-duplicate-bugs.js";
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -20,10 +19,9 @@ async function main(): Promise<void> {
   });
 
   registerListBugsTool(server, config, bitableClient);
-  registerGetBugRangeTool(server, config, bitableClient);
-  registerGetBugDetailTool(server, config, bitableClient);
+  registerFixBugsTool(server, config, bitableClient);
   registerUpdateBugStatusTool(server, config, bitableClient);
-  registerAppendBugCommentTool(server, config, bitableClient);
+  registerCheckDuplicateBugsTool(server, config, bitableClient);
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

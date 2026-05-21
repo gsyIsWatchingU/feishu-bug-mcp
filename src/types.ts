@@ -46,6 +46,9 @@ export type ToolErrorCode =
 export type ToolError = {
   code: ToolErrorCode;
   message: string;
+  suggestions?: string[];
+  details?: string;
+  recovery_guide?: string[];
 };
 
 export type ToolResponse<T> = {
