@@ -4,280 +4,57 @@ import { AppConfig } from "../config.js";
 import { FeishuAiClient } from "../feishu/ai.js";
 import { FeishuBitableClient } from "../feishu/bitable.js";
 import {
+  analyzeBugWithContext,
+  appendBugRemark,
+  buildFailureRemark,
+  buildFixRemark,
+  resolveTargetBugs,
+  resolveWorkspaceDirectories,
+  runAgentFix
+} from "./analysis-workflow.js";
+import {
   buildErrorResponse,
   buildSuccessResponse,
   classifyWriteError,
   toToolPayload
 } from "./helpers.js";
-import { FeishuRecord, NormalizedBug } from "../types.js";
-import * as fs from "fs";
-import * as path from "path";
+import { applyBugWorkflowUpdate } from "./workflow-update.js";
 
-const FIXED_STATUS = "\u5df2\u4fee\u590d\u5f85\u9a8c\u8bc1";
-const REVIEW_STATUS = "\u5f85\u5ba1\u67e5";
+const FIXED_STATUS = "宸蹭慨澶嶅緟楠岃瘉";
 
-interface BugFixResult {
+type FixBugResult = {
   bug_id: string;
   row_index: number;
   title: string | null;
   success: boolean;
-  error?: string;
-  code_fix_applied?: boolean;
-  fix_details?: string;
+  conclusion?: string;
+  evidence_count?: number;
   affected_files?: string[];
-  ai_expanded?: boolean;
+  workspace_reads?: {
+    workspace: string;
+    project_read_path: string;
+    reused: boolean;
+  }[];
+  analysis_remark_updated?: boolean;
+  fix_remark_updated?: boolean;
+  status_updated?: boolean;
   status_set?: string;
-}
-
-function searchCodebase(searchDir: string, keywords: string[]): string[] {
-  const results: string[] = [];
-  const visited = new Set<string>();
-
-  function search(dir: string): void {
-    if (visited.has(dir)) return;
-    visited.add(dir);
-
-    try {
-      const entries = fs.readdirSync(dir);
-
-      for (const entry of entries) {
-        const fullPath = path.join(dir, entry);
-        
-        if (entry.startsWith(".") || entry === "node_modules" || entry === ".git") {
-          continue;
-        }
-
-        const stat = fs.statSync(fullPath);
-        
-        if (stat.isDirectory()) {
-          search(fullPath);
-        } else if (stat.isFile()) {
-          const ext = path.extname(entry).toLowerCase();
-          if (ext === ".ts" || ext === ".js" || ext === ".tsx" || ext === ".jsx" || 
-              ext === ".vue" || ext === ".svelte" || ext === ".py" || ext === ".go" ||
-              ext === ".java" || ext === ".cpp" || ext === ".c" || ext === ".rs") {
-            try {
-              const content = fs.readFileSync(fullPath, "utf8");
-              const foundKeywords = keywords.filter(k => 
-                content.toLowerCase().includes(k.toLowerCase())
-              );
-              if (foundKeywords.length > 0) {
-                results.push(fullPath);
-              }
-            } catch {
-              continue;
-            }
-          }
-        }
-      }
-    } catch {
-      return;
-    }
-  }
-
-  search(searchDir);
-  return results;
-}
-
-function extractKeywords(bug: NormalizedBug): string[] {
-  const keywords: string[] = [];
-  
-  const textFields = [
-    bug.title,
-    bug.description,
-    bug.repro_steps,
-    bug.expected_result,
-    bug.actual_result,
-    bug.module
-  ].filter(Boolean) as string[];
-
-  const allText = textFields.join(" ");
-  
-  const pattern = /[a-zA-Z_][a-zA-Z0-9_]{2,}/g;
-  let match;
-  while ((match = pattern.exec(allText)) !== null) {
-    keywords.push(match[0]);
-  }
-
-  const chinesePattern = /[\u4e00-\u9fa5]{2,}/g;
-  while ((match = chinesePattern.exec(allText)) !== null) {
-    keywords.push(match[0]);
-  }
-
-  return [...new Set(keywords)];
-}
-
-function analyzeAndFixBug(bug: NormalizedBug, searchDir: string): {
-  fixApplied: boolean;
-  fixDetails: string;
-  affectedFiles: string[];
-} {
-  const keywords = extractKeywords(bug);
-  
-  if (keywords.length === 0) {
-    return {
-      fixApplied: false,
-      fixDetails: "无法从bug描述中提取关键词",
-      affectedFiles: []
-    };
-  }
-
-  const affectedFiles = searchCodebase(searchDir, keywords);
-  
-  if (affectedFiles.length === 0) {
-    return {
-      fixApplied: false,
-      fixDetails: `未找到包含关键词 [${keywords.slice(0, 5).join(", ")}] 的文件`,
-      affectedFiles: []
-    };
-  }
-
-  let fixApplied = false;
-  let fixDetails = "";
-  const modifiedFiles: string[] = [];
-
-  for (const filePath of affectedFiles.slice(0, 10)) {
-    try {
-      let content = fs.readFileSync(filePath, "utf8");
-      let modified = false;
-
-      if (bug.description?.toLowerCase().includes("内存泄漏") || 
-          bug.title?.toLowerCase().includes("内存泄漏")) {
-        if (content.includes("setInterval") && !content.includes("clearInterval")) {
-          const intervalMatch = content.match(/(const|let|var)\s+(\w+)\s*=\s*setInterval\(/);
-          if (intervalMatch) {
-            const intervalName = intervalMatch[2];
-            const classMatch = content.match(/class\s+(\w+)/);
-            if (classMatch) {
-              const className = classMatch[1];
-              const destructorMatch = content.match(new RegExp(`(\\b${className}\\s*=\\s*\\{[^}]*\\})`));
-              if (destructorMatch) {
-                const destructorContent = destructorMatch[1];
-                if (!destructorContent.includes(`clearInterval(${intervalName})`)) {
-                  const newDestructor = destructorContent.replace(
-                    /(\{\s*)/,
-                    `$1clearInterval(${intervalName});\n`
-                  );
-                  content = content.replace(destructorMatch[1], newDestructor);
-                  modified = true;
-                  fixDetails += `在 ${path.basename(filePath)} 中添加了 clearInterval(${intervalName}) 调用\n`;
-                }
-              }
-            }
-          }
-        }
-
-        if (content.includes("setTimeout") && content.includes("this") && 
-            !content.includes("clearTimeout") && !content.includes("_timeout")) {
-          content = content.replace(
-            /(\bthis\.\w+\s*=\s*)setTimeout\(/g,
-            "$1setTimeout("
-          );
-          const timerMatch = content.match(/this\.\s*(\w+)\s*=\s*setTimeout\(/);
-          if (timerMatch) {
-            const timerName = timerMatch[1];
-            const classMatch = content.match(/class\s+(\w+)/);
-            if (classMatch) {
-              const className = classMatch[1];
-              const destructorMatch = content.match(new RegExp(`(\\b${className}\\s*=\\s*\\{[^}]*\\})`));
-              if (destructorMatch && !destructorMatch[1].includes(`clearTimeout(this.${timerName})`)) {
-                const newDestructor = destructorMatch[1].replace(
-                  /(\{\s*)/,
-                  `$1clearTimeout(this.${timerName});\n`
-                );
-                content = content.replace(destructorMatch[1], newDestructor);
-                modified = true;
-                fixDetails += `在 ${path.basename(filePath)} 中添加了 clearTimeout(this.${timerName}) 调用\n`;
-              }
-            }
-          }
-        }
-      }
-
-      if (bug.description?.toLowerCase().includes("空指针") || 
-          bug.description?.toLowerCase().includes("null") ||
-          bug.title?.toLowerCase().includes("空指针")) {
-        const nullCheckPattern = /(\w+)\s*\.\s*(\w+)/g;
-        let nullMatch;
-        while ((nullMatch = nullCheckPattern.exec(content)) !== null) {
-          const varName = nullMatch[1];
-          const property = nullMatch[2];
-          const checkPattern = new RegExp(`if\\s*\\(\\s*${varName}\\s*\\)\\s*\\{`);
-          if (!content.match(checkPattern)) {
-            const usageIndex = content.indexOf(`${varName}.${property}`);
-            if (usageIndex !== -1) {
-              const lineStart = content.lastIndexOf("\n", usageIndex) + 1;
-              const lineEnd = content.indexOf("\n", usageIndex);
-              const line = content.substring(lineStart, lineEnd);
-              if (!line.includes("if") && !line.includes("?.") && !line.includes("&&")) {
-                const newLine = line.replace(
-                  new RegExp(`(${varName})\\.(${property})`),
-                  `$1?.$2`
-                );
-                content = content.substring(0, lineStart) + newLine + content.substring(lineEnd);
-                modified = true;
-                fixDetails += `在 ${path.basename(filePath)} 中将 ${varName}.${property} 改为 ${varName}?.${property}\n`;
-                break;
-              }
-            }
-          }
-        }
-      }
-
-      if (bug.description?.toLowerCase().includes("未定义") || 
-          bug.description?.toLowerCase().includes("undefined")) {
-        content = content.replace(
-          /(\w+)\s*\.\s*(\w+)/g,
-          (match, p1, p2) => {
-            const safeMatch = content.match(new RegExp(`(\\b${p1}\\s*=\\s*[^;]+)`));
-            if (!safeMatch) {
-              return `(${p1} || {}).${p2}`;
-            }
-            return match;
-          }
-        );
-        modified = true;
-        fixDetails += `在 ${path.basename(filePath)} 中添加了 undefined 检查\n`;
-      }
-
-      if (bug.description?.toLowerCase().includes("无限循环") || 
-          bug.title?.toLowerCase().includes("无限循环")) {
-        const loopPattern = /(while|for)\s*\([^)]+\)\s*\{/g;
-        let loopMatch;
-        while ((loopMatch = loopPattern.exec(content)) !== null) {
-          const loopType = loopMatch[1];
-          if (loopType === "while") {
-            const conditionMatch = content.substring(loopMatch.index).match(/while\s*\(([^)]+)\)/);
-            if (conditionMatch && !conditionMatch[1].includes("!=") && !conditionMatch[1].includes("==")) {
-              const fix = `// 注意：此循环可能导致无限循环，请检查条件\n${loopMatch[0]}`;
-              content = content.replace(loopMatch[0], fix);
-              modified = true;
-              fixDetails += `在 ${path.basename(filePath)} 中标记了可能的无限循环\n`;
-              break;
-            }
-          }
-        }
-      }
-
-      if (modified) {
-        fs.writeFileSync(filePath, content);
-        modifiedFiles.push(filePath);
-        fixApplied = true;
-      }
-    } catch (error) {
-      fixDetails += `处理 ${path.basename(filePath)} 时出错: ${error instanceof Error ? error.message : "未知错误"}\n`;
-    }
-  }
-
-  if (!fixApplied) {
-    fixDetails = `找到 ${affectedFiles.length} 个相关文件，但无法自动修复此类型的bug。建议手动检查：\n${affectedFiles.slice(0, 5).map(f => `- ${path.basename(f)}`).join("\n")}`;
-  }
-
-  return {
-    fixApplied,
-    fixDetails,
-    affectedFiles: modifiedFiles.length > 0 ? modifiedFiles : affectedFiles.slice(0, 5)
+  deprecated_inputs_used?: string[];
+  agent_execution?: {
+    command: string;
+    exit_code: number | null;
+    stdout_preview: string;
+    stderr_preview: string;
   };
+  error?: string;
+};
+
+function previewOutput(value: string, maxLength = 600): string {
+  const normalized = value.trim();
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+  return `${normalized.slice(0, maxLength)}...`;
 }
 
 export function registerFixBugsTool(
@@ -289,218 +66,205 @@ export function registerFixBugsTool(
   server.registerTool(
     "fix_bugs",
     {
-      description: "Batch fix bugs by bug IDs or index range. Reads bug descriptions, searches codebase for related files, attempts code fixes, and sets bug status to '已修复待验证' or '待审查'.",
+      description:
+        "Analyze selected bugs with multi-workspace context, optionally reuse project-read cache, then ask the current MCP coding agent to apply a fix and sync the workflow back to Feishu.",
       inputSchema: {
-        bug_ids: z.array(z.string()).optional().describe("Array of bug IDs to fix"),
-        start_index: z.number().int().min(1).optional().describe("Start index for range fix"),
-        end_index: z.number().int().min(1).optional().describe("End index for range fix"),
-        resolution_summary: z.string().optional().describe("Summary of the fix for all bugs"),
-        code_fix_enabled: z.boolean().optional().default(true).describe("Whether to enable automatic code fixing"),
-        search_directory: z.string().optional().describe("Directory to search for code files (defaults to current working directory)"),
-        ai_expand_enabled: z.boolean().optional().default(true).describe("Whether to enable AI expansion of bug descriptions")
+        bug_ids: z.array(z.string()).optional().describe("Specific bug IDs to process"),
+        start_index: z.number().int().min(1).optional().describe("Start index for range query"),
+        end_index: z.number().int().min(1).optional().describe("End index for range query"),
+        resolution_summary: z.string().optional().describe("Optional resolution summary appended to fix remarks"),
+        workspace_directories: z
+          .array(z.string())
+          .optional()
+          .describe("Absolute workspace directories used for code analysis and fixing"),
+        search_directory: z
+          .string()
+          .optional()
+          .describe("Deprecated single workspace directory; kept for backward compatibility"),
+        refresh_project_read: z
+          .boolean()
+          .optional()
+          .default(false)
+          .describe("Force rebuild gsy-fix-read.md in each workspace"),
+        write_analysis_remark: z
+          .boolean()
+          .optional()
+          .default(true)
+          .describe("Whether to append the analysis result to the Feishu remark field"),
+        project_read_filename: z
+          .string()
+          .optional()
+          .default("gsy-fix-read.md")
+          .describe("Filename used for per-workspace project-read cache"),
+        ai_expand_enabled: z
+          .boolean()
+          .optional()
+          .default(true)
+          .describe("Whether to expand bug description through Feishu AI before analysis")
       }
     },
-    async ({ bug_ids, start_index: startIndex, end_index: endIndex, resolution_summary, code_fix_enabled = true, search_directory, ai_expand_enabled = true }) => {
-      if (!bug_ids && (!startIndex || !endIndex)) {
-        return toToolPayload(
-          buildErrorResponse(config, {
-            code: "VALIDATION_ERROR",
-            message: "Either bug_ids array or start_index/end_index range must be provided"
-          })
-        );
-      }
-
-      if (startIndex !== undefined && endIndex !== undefined && startIndex > endIndex) {
-        return toToolPayload(
-          buildErrorResponse(config, {
-            code: "INVALID_RANGE",
-            message: "start_index must be less than or equal to end_index"
-          })
-        );
-      }
-
+    async ({
+      bug_ids,
+      start_index: startIndex,
+      end_index: endIndex,
+      resolution_summary,
+      workspace_directories,
+      search_directory,
+      refresh_project_read = false,
+      write_analysis_remark = true,
+      project_read_filename = "gsy-fix-read.md",
+      ai_expand_enabled = true
+    }) => {
       try {
-        const { items } = await bitableClient.listAllRecords();
-        const bugs = bitableClient.normalizeAndOrderBugs(items);
-        const bugIdToRecord = new Map<string, FeishuRecord>();
-        
-        items.forEach(record => {
-          const bug = bitableClient.normalizeBug(record);
-          bugIdToRecord.set(bug.bug_id, record);
-        });
-
-        let targetBugs: NormalizedBug[] = [];
-
-        if (bug_ids && bug_ids.length > 0) {
-          const notFoundIds: string[] = [];
-          bug_ids.forEach(id => {
-            const bug = bugs.find(b => b.bug_id === id);
-            if (bug) {
-              targetBugs.push(bug);
-            } else {
-              notFoundIds.push(id);
-            }
-          });
-
-          if (notFoundIds.length > 0) {
-            return toToolPayload(
-              buildErrorResponse(config, {
-                code: "NOT_FOUND",
-                message: `Bugs not found: ${notFoundIds.join(", ")}`
-              })
-            );
-          }
-        } else if (startIndex !== undefined && endIndex !== undefined) {
-          if (startIndex > bugs.length || endIndex > bugs.length) {
-            return toToolPayload(
-              buildErrorResponse(config, {
-                code: "INVALID_RANGE",
-                message: `Requested range ${startIndex}-${endIndex} is out of bounds for ${bugs.length} bugs`
-              })
-            );
-          }
-          targetBugs = bugs.slice(startIndex - 1, endIndex);
+        const deprecatedInputsUsed: string[] = [];
+        const rawDirectories = workspace_directories ? [...workspace_directories] : [];
+        if (search_directory) {
+          rawDirectories.push(search_directory);
+          deprecatedInputsUsed.push("search_directory");
         }
 
-        const results: BugFixResult[] = [];
-        const searchDir = search_directory || process.cwd();
+        const resolvedWorkspaces = resolveWorkspaceDirectories(rawDirectories);
+        const targets = await resolveTargetBugs(bitableClient, bug_ids, startIndex, endIndex);
+        const results: FixBugResult[] = [];
 
-        for (const bug of targetBugs) {
+        for (const { bug, record } of targets) {
+          const analysis = await analyzeBugWithContext({
+            bug,
+            workspaceDirectories: resolvedWorkspaces,
+            refreshProjectRead: refresh_project_read,
+            projectReadFilename: project_read_filename,
+            aiClient,
+            aiExpandEnabled: ai_expand_enabled
+          });
+
+          let analysisRemarkUpdated = false;
+          if (write_analysis_remark) {
+            const remarkResult = await appendBugRemark(
+              bitableClient,
+              config,
+              record,
+              analysis.analysis_remark
+            );
+            analysisRemarkUpdated = remarkResult.updated;
+          }
+
           try {
-            let codeFixApplied = false;
-            let fixDetails = "";
-            let affectedFiles: string[] = [];
+            const execution = await runAgentFix({
+              server,
+              bug,
+              analysis,
+              workspaceDirectories: resolvedWorkspaces
+            });
 
-            let expandedDescription = bug.description || bug.title || "";
-            if (ai_expand_enabled && (bug.title || bug.description)) {
-              expandedDescription = await aiClient.expandBugDescription(
-                bug.title || "",
-                bug.description || undefined
+            if (execution.exitCode !== 0) {
+              const failureRemark = buildFailureRemark(
+                `Agent runner exited with code ${execution.exitCode}`,
+                execution.stderr
               );
-            }
+              const failureRemarkResult = await appendBugRemark(
+                bitableClient,
+                config,
+                record,
+                failureRemark
+              );
 
-            if (code_fix_enabled) {
-              const bugWithExpandedDesc = { ...bug, description: expandedDescription };
-              const fixResult = analyzeAndFixBug(bugWithExpandedDesc, searchDir);
-              codeFixApplied = fixResult.fixApplied;
-              fixDetails = fixResult.fixDetails;
-              affectedFiles = fixResult.affectedFiles;
-            }
-
-            const record = bugIdToRecord.get(bug.bug_id);
-            if (!record) {
               results.push({
                 bug_id: bug.bug_id,
                 row_index: bug.row_index,
                 title: bug.title,
                 success: false,
-                error: "Record not found"
+                conclusion: analysis.conclusion,
+                evidence_count: analysis.evidence.length,
+                affected_files: analysis.suspected_components,
+                workspace_reads: analysis.workspace_reads,
+                analysis_remark_updated: analysisRemarkUpdated,
+                fix_remark_updated: failureRemarkResult.updated,
+                status_updated: false,
+                deprecated_inputs_used: deprecatedInputsUsed,
+                agent_execution: {
+                  command: "current_mcp_agent",
+                  exit_code: execution.exitCode,
+                  stdout_preview: previewOutput(execution.stdout),
+                  stderr_preview: previewOutput(execution.stderr)
+                },
+                error: `Agent runner exited with code ${execution.exitCode}`
               });
               continue;
             }
 
-            const bugType = expandedDescription.toLowerCase();
-            const isKnownPattern = bugType.includes("内存泄漏") || 
-                                   bugType.includes("空指针") || 
-                                   bugType.includes("null") || 
-                                   bugType.includes("未定义") || 
-                                   bugType.includes("undefined") || 
-                                   bugType.includes("无限循环");
+            const fixRemarkBody = resolution_summary
+              ? `${buildFixRemark(execution.stdout, execution.stderr)}\n补充说明：${resolution_summary}`
+              : buildFixRemark(execution.stdout, execution.stderr);
 
-            const isFixApplied = code_fix_enabled && codeFixApplied;
-            const statusToSet = isFixApplied ? FIXED_STATUS : (isKnownPattern ? FIXED_STATUS : REVIEW_STATUS);
+            const fixRemarkResult = await appendBugRemark(
+              bitableClient,
+              config,
+              record,
+              fixRemarkBody
+            );
 
-            const fieldsToUpdate: Record<string, unknown> = {
-              [config.fieldMapping.status]: statusToSet
-            };
+            await applyBugWorkflowUpdate({
+              bitableClient,
+              config,
+              record,
+              status: FIXED_STATUS
+            });
 
-            if (config.fieldMapping.description && expandedDescription !== bug.description) {
-              fieldsToUpdate[config.fieldMapping.description] = expandedDescription;
-            }
-
-            let commentParts: string[] = [];
-            
-            let errorReason = "";
-            let fixPlan = "";
-            
-            if (bugType.includes("内存泄漏")) {
-              errorReason = "错误原因：代码中使用了 setInterval/setTimeout 但未正确清理，导致内存泄漏";
-              fixPlan = "修复方案：在类的析构函数中添加 clearInterval/clearTimeout 调用";
-            } else if (bugType.includes("空指针") || bugType.includes("null")) {
-              errorReason = "错误原因：对象可能为 null/undefined 时直接访问属性，导致空指针异常";
-              fixPlan = "修复方案：添加可选链操作符 (?.) 或空值检查";
-            } else if (bugType.includes("未定义") || bugType.includes("undefined")) {
-              errorReason = "错误原因：访问未定义变量或属性";
-              fixPlan = "修复方案：添加 undefined 检查，使用默认值保护";
-            } else if (bugType.includes("无限循环")) {
-              errorReason = "错误原因：循环条件可能永远为真，导致无限循环";
-              fixPlan = "修复方案：检查循环条件，添加终止条件";
-            } else {
-              errorReason = `错误原因：${bug.title || bug.description || "未明确"}`;
-              fixPlan = "修复方案：自动修复未匹配到已知模式，建议手动检查";
-            }
-            
-            if (typeof resolution_summary === "string") {
-              commentParts.push(resolution_summary);
-            }
-            
-            if (ai_expand_enabled) {
-              commentParts.push(`**AI扩写描述:**\n${expandedDescription.substring(0, 500)}${expandedDescription.length > 500 ? "..." : ""}`);
-            }
-            
-            if (affectedFiles.length > 0) {
-              commentParts.push(`**修复涉及文件:**\n${affectedFiles.map(f => `- ${path.basename(f)}`).join("\n")}`);
-            }
-            
-            commentParts.push(`**错误原因:**\n${errorReason}`);
-            commentParts.push(`**修复方案:**\n${fixPlan}`);
-            
-            if (fixDetails) {
-              commentParts.push(`**详细修复记录:**\n${fixDetails}`);
-            }
-
-            if (commentParts.length > 0 && config.fieldMapping.comment) {
-              const existingComment = record.fields[config.fieldMapping.comment];
-              const normalizedExisting = typeof existingComment === "string" ? existingComment : "";
-              fieldsToUpdate[config.fieldMapping.comment] = [normalizedExisting, ...commentParts]
-                .filter(Boolean)
-                .join("\n\n");
-            }
-
-            await bitableClient.updateRecord(record.record_id, fieldsToUpdate);
-            
             results.push({
               bug_id: bug.bug_id,
               row_index: bug.row_index,
               title: bug.title,
               success: true,
-              code_fix_applied: codeFixApplied,
-              fix_details: fixDetails,
-              affected_files: affectedFiles.map(f => path.basename(f)),
-              ai_expanded: ai_expand_enabled,
-              status_set: statusToSet
+              conclusion: analysis.conclusion,
+              evidence_count: analysis.evidence.length,
+              affected_files: analysis.suspected_components,
+              workspace_reads: analysis.workspace_reads,
+              analysis_remark_updated: analysisRemarkUpdated,
+              fix_remark_updated: fixRemarkResult.updated,
+              status_updated: true,
+              status_set: FIXED_STATUS,
+              deprecated_inputs_used: deprecatedInputsUsed,
+              agent_execution: {
+                command: "current_mcp_agent",
+                exit_code: execution.exitCode,
+                stdout_preview: previewOutput(execution.stdout),
+                stderr_preview: previewOutput(execution.stderr)
+              }
             });
           } catch (error) {
+            const failureMessage = error instanceof Error ? error.message : "Unknown agent runner error";
+            const failureRemark = buildFailureRemark(failureMessage, "");
+            const failureRemarkResult = await appendBugRemark(
+              bitableClient,
+              config,
+              record,
+              failureRemark
+            );
+
             results.push({
               bug_id: bug.bug_id,
               row_index: bug.row_index,
               title: bug.title,
               success: false,
-              error: error instanceof Error ? error.message : "Unknown error"
+              conclusion: analysis.conclusion,
+              evidence_count: analysis.evidence.length,
+              affected_files: analysis.suspected_components,
+              workspace_reads: analysis.workspace_reads,
+              analysis_remark_updated: analysisRemarkUpdated,
+              fix_remark_updated: failureRemarkResult.updated,
+              status_updated: false,
+              deprecated_inputs_used: deprecatedInputsUsed,
+              error: failureMessage
             });
           }
         }
 
-        const successCount = results.filter(r => r.success).length;
-        const failCount = results.filter(r => !r.success).length;
-        const codeFixCount = results.filter(r => r.code_fix_applied).length;
-
+        const successCount = results.filter((item) => item.success).length;
         return toToolPayload(
           buildSuccessResponse(config, {
-            total: targetBugs.length,
+            total: results.length,
             success_count: successCount,
-            fail_count: failCount,
-            code_fix_count: codeFixCount,
+            fail_count: results.length - successCount,
             results
           })
         );

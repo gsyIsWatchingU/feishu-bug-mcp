@@ -2,19 +2,17 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { AppConfig } from "../config.js";
 import { FeishuBitableClient } from "../feishu/bitable.js";
+import { BUG_STATUS_VALUES } from "../types.js";
 import {
   buildErrorResponse,
   buildSuccessResponse,
   classifyWriteError,
   toToolPayload
 } from "./helpers.js";
+import { applyBugWorkflowUpdate } from "./workflow-update.js";
 
-const ALLOWED_BUG_STATUS = [
-  "\u5904\u7406\u4e2d",
-  "\u5df2\u4fee\u590d\u5f85\u9a8c\u8bc1",
-  "\u65e0\u6cd5\u590d\u73b0",
-  "\u9700\u4eba\u5de5\u786e\u8ba4"
-] as const;
+const FIXED_WAITING_VERIFICATION_STATUS = BUG_STATUS_VALUES[1];
+const MANUAL_CONFIRM_STATUS = BUG_STATUS_VALUES[3];
 
 export function registerUpdateBugStatusTool(
   server: McpServer,
@@ -24,13 +22,13 @@ export function registerUpdateBugStatusTool(
   server.registerTool(
     "update_bug_status",
     {
-      description: "Update bug status or verify if a bug is fixed. Supports validation confirmation and adding verification results.",
+      description: "Update bug status or append verification / resolution details back to Feishu.",
       inputSchema: {
         bug_id: z.string().min(1).describe("Bug ID to update"),
-        status: z.enum(ALLOWED_BUG_STATUS).optional().describe("New status for the bug"),
-        verify_fixed: z.boolean().optional().describe("Set to true to verify and mark bug as resolved after verification"),
-        verification_result: z.string().optional().describe("Verification result/notes"),
-        resolution_summary: z.string().optional().describe("Summary of the resolution")
+        status: z.enum(BUG_STATUS_VALUES).optional().describe("Target bug status"),
+        verify_fixed: z.boolean().optional().describe("Whether to run the verification status transition"),
+        verification_result: z.string().optional().describe("Verification summary or notes"),
+        resolution_summary: z.string().optional().describe("Resolution summary appended to remark/comment")
       }
     },
     async ({ bug_id, status, verify_fixed, verification_result, resolution_summary }) => {
@@ -46,41 +44,16 @@ export function registerUpdateBugStatusTool(
         }
 
         const bug = bitableClient.normalizeBug(record);
-        const fieldsToUpdate: Record<string, unknown> = {};
-
-        if (verify_fixed) {
-          const currentStatus = bug.status;
-          if (currentStatus !== "\u5df2\u4fee\u590d\u5f85\u9a8c\u8bc1") {
-            return toToolPayload(
-              buildErrorResponse(config, {
-                code: "VALIDATION_ERROR",
-                message: `Cannot verify bug - current status is "${currentStatus}", expected "已修复待验证"`
-              })
-            );
-          }
-
-          fieldsToUpdate[config.fieldMapping.status] = "\u9700\u4eba\u5de5\u786e\u8ba4";
-          
-          if (config.fieldMapping.verificationResult && verification_result) {
-            fieldsToUpdate[config.fieldMapping.verificationResult] = verification_result;
-          }
-          
-          if (config.fieldMapping.verificationTime) {
-            fieldsToUpdate[config.fieldMapping.verificationTime] = new Date().toISOString();
-          }
-        } else if (status) {
-          fieldsToUpdate[config.fieldMapping.status] = status;
+        if (verify_fixed && bug.status !== FIXED_WAITING_VERIFICATION_STATUS) {
+          return toToolPayload(
+            buildErrorResponse(config, {
+              code: "VALIDATION_ERROR",
+              message: `Cannot verify bug - current status is "${bug.status}", expected "${FIXED_WAITING_VERIFICATION_STATUS}"`
+            })
+          );
         }
 
-        if (typeof resolution_summary === "string" && config.fieldMapping.comment) {
-          const existingComment = record.fields[config.fieldMapping.comment];
-          const normalizedExisting = typeof existingComment === "string" ? existingComment : "";
-          fieldsToUpdate[config.fieldMapping.comment] = [normalizedExisting, resolution_summary]
-            .filter(Boolean)
-            .join("\n");
-        }
-
-        if (Object.keys(fieldsToUpdate).length === 0) {
+        if (!verify_fixed && !status && typeof resolution_summary !== "string") {
           return toToolPayload(
             buildErrorResponse(config, {
               code: "VALIDATION_ERROR",
@@ -89,15 +62,33 @@ export function registerUpdateBugStatusTool(
           );
         }
 
-        const updatedRecord = await bitableClient.updateRecord(record.record_id, fieldsToUpdate);
+        const workflowResult = await applyBugWorkflowUpdate({
+          bitableClient,
+          config,
+          record,
+          status: verify_fixed ? MANUAL_CONFIRM_STATUS : status,
+          verification_result: verify_fixed ? verification_result : undefined,
+          verification_time: verify_fixed ? new Date().toISOString() : undefined,
+          resolution_summary
+        });
+
         return toToolPayload(
           buildSuccessResponse(config, {
-            bug: bitableClient.normalizeBug(updatedRecord),
-            updated_fields: Object.keys(fieldsToUpdate)
+            bug: bitableClient.normalizeBug(workflowResult.updatedRecord),
+            updated_fields: workflowResult.updatedFields
           })
         );
       } catch (error) {
-        return toToolPayload(buildErrorResponse(config, classifyWriteError(error)));
+        const writeError = classifyWriteError(error);
+        if (
+          error instanceof Error &&
+          error.message === "No remark/comment field configured for resolution summary"
+        ) {
+          writeError.code = "CONFIG_ERROR";
+          writeError.message = error.message;
+        }
+
+        return toToolPayload(buildErrorResponse(config, writeError));
       }
     }
   );

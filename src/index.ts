@@ -5,6 +5,7 @@ import { FeishuAiClient } from "./feishu/ai.js";
 import { FeishuAuthClient } from "./feishu/auth.js";
 import { FeishuBitableClient } from "./feishu/bitable.js";
 import { registerListBugsTool } from "./tools/list-bugs.js";
+import { registerAnalyzeBugTool } from "./tools/analyze-bug.js";
 import { registerFixBugsTool } from "./tools/fix-bugs.js";
 import { registerUpdateBugStatusTool } from "./tools/update-bug-status.js";
 import { registerCheckDuplicateBugsTool } from "./tools/check-duplicate-bugs.js";
@@ -21,6 +22,7 @@ async function main(): Promise<void> {
   });
 
   registerListBugsTool(server, config, bitableClient);
+  registerAnalyzeBugTool(server, config, bitableClient, aiClient);
   registerFixBugsTool(server, config, bitableClient, aiClient);
   registerUpdateBugStatusTool(server, config, bitableClient);
   registerCheckDuplicateBugsTool(server, config, bitableClient);

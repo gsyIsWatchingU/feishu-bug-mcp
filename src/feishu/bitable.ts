@@ -51,10 +51,9 @@ export class FeishuBitableClient {
     let total = 0;
 
     while (hasMore) {
-      const payload = await this.request<FeishuListResponse>(
-        this.buildRecordUrl(pageToken),
-        { method: "GET" }
-      );
+      const payload = await this.request<FeishuListResponse>(this.buildRecordUrl(pageToken), {
+        method: "GET"
+      });
 
       if (payload.code !== 0) {
         throw new Error(payload.msg || "Failed to list Feishu Bitable records");
@@ -77,8 +76,7 @@ export class FeishuBitableClient {
     const listed = await this.listAllRecords();
     const mapping = this.config.fieldMapping.bugId;
     return (
-      listed.items.find((item) => this.getComparableValue(item.fields[mapping]) === bugId) ??
-      null
+      listed.items.find((item) => this.getComparableValue(item.fields[mapping]) === bugId) ?? null
     );
   }
 
@@ -302,7 +300,8 @@ export class FeishuBitableClient {
       return undefined;
     }
 
-    const message = (payload as { msg?: unknown; message?: unknown }).msg ??
+    const message =
+      (payload as { msg?: unknown; message?: unknown }).msg ??
       (payload as { msg?: unknown; message?: unknown }).message;
     return typeof message === "string" && message.trim().length > 0 ? message : undefined;
   }

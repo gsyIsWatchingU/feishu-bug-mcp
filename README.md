@@ -1,172 +1,231 @@
 # Feishu Bug MCP for Trae
 
-这个 MCP Server 用于读取和更新飞书多维表格中的 Bug 数据，适合接入 Trae / MCP 客户端后，以结构化工具的方式查询 bug 列表、批量修复、更新状态和检测重复。
+这个 MCP Server 用于读取和更新飞书多维表格中的 Bug 数据，适合接入 Trae / Claude Code / Codex 等支持 MCP 的客户端后，以结构化工具的方式查询 Bug 列表、分析问题、推动修复、更新状态，以及检测重复问题。
 
-## 已适配的默认中文表头
+## 工具说明
 
-如果你的飞书表格表头就是下面这套名称，默认无需再额外配置字段映射：
+### `list_bugs`
 
-- `编号`
-- `功能模块`
-- `Bug问题描述`
-- `优先级`
-- `解决状态`
-- `提交时间`
-- `解决日期`
-- `验证结果`
-- `验证时间`
-- `备注`
+用于查询飞书中的 Bug 列表。
 
-## 提供的工具
+常用参数：
 
-### 1. list_bugs - 列出bug
+- `bug_id`：查询指定 Bug
+- `start_index` / `end_index`：按顺序查询一个范围
+- `status`：按状态筛选
+- `assignee`：按处理人筛选
+- `priority`：按优先级筛选
 
-支持多种筛选方式查询bug列表。
+### `analyze_bug`
 
-**参数：**
-- `bug_id` (可选): 字符串，查询指定编号的bug
-- `start_index` (可选): 数字，范围查询起始索引
-- `end_index` (可选): 数字，范围查询结束索引
-- `status` (可选): 字符串，按状态筛选
-- `assignee` (可选): 字符串，按负责人筛选
-- `priority` (可选): 字符串，按优先级筛选
-- `limit` (可选): 数字，返回数量限制
-- `offset` (可选): 数字，分页偏移量
+用于分析一个或多个 Bug，不会修改代码。
 
-**使用示例：**
+它会：
+
+- 从飞书读取目标 Bug 数据
+- 读取你指定的项目工作目录
+- 在每个工作目录根下生成或复用 `gsy-fix-read.md`
+- 搜索可能相关的代码文件并输出结构化分析结果
+- 可选地把分析结论回写到飞书备注字段
+
+重点说明：
+
+- `workspace_directories` 可传可不传
+- 如果不传，默认使用当前 Coding IDE 打开的工作目录
+- 如果传入多个目录，必须是绝对路径
+- 特别适合前后端分离项目，例如同时传前端目录和后端目录
+
+示例：
+
 ```json
-// 查询指定编号的bug
-{"bug_id": "BUG-001"}
-
-// 查询编号范围的bug（第7-10条）
-{"start_index": 7, "end_index": 10}
-
-// 查询所有待处理的bug
-{"status": "处理中"}
+{
+  "bug_ids": ["BUG-001"],
+  "workspace_directories": [
+    "E:/project/web",
+    "E:/project/server"
+  ],
+  "refresh_project_read": false,
+  "write_analysis_remark": true
+}
 ```
 
-### 2. fix_bugs - 批量修复bug
+### `fix_bugs`
 
-批量将bug状态设置为"已修复待验证"。
+用于先分析 Bug，再由当前正在使用 MCP 的代理直接修复代码。
 
-**参数：**
-- `bug_ids` (可选): 字符串数组，指定多个bug编号
-- `start_index` (可选): 数字，范围修复起始索引
-- `end_index` (可选): 数字，范围修复结束索引
-- `resolution_summary` (可选): 字符串，修复摘要说明
+它会：
 
-**使用示例：**
+- 复用 `analyze_bug` 的多工作目录分析流程
+- 先检查 `gsy-fix-read.md` 是否存在，再决定是否重新阅读项目
+- 通过 MCP sampling 把 Bug 和分析上下文交给当前代理继续修复
+- 把修复备注写回飞书
+- 只有当当前代理返回修复成功时，才更新 Bug 状态
+
+重点说明：
+
+- 不支持手动指定代理
+- 当前是 Trae 就由 Trae 修
+- 当前是 Claude Code 就由 Claude Code 修
+- 当前是 Codex 就由 Codex 修
+- `workspace_directories` 不传时默认使用当前 IDE 工作目录
+- `search_directory` 仍然保留为旧字段兼容兜底
+
+### `update_bug_status`
+
+用于更新 Bug 状态，或者补充验证/处理说明。
+
+常用参数：
+
+- `bug_id`：目标 Bug 编号
+- `status`：目标状态
+- `verify_fixed`：执行验证流转
+- `verification_result`：验证说明
+- `resolution_summary`：追加到备注中的处理说明
+
+### `check_duplicate_bugs`
+
+用于按文本相似度查找重复 Bug，并可选地把重复关系标记回飞书备注。
+
+## 工作目录说明
+
+当你使用 `analyze_bug` 或 `fix_bugs` 时，可以显式告诉工具应该读取哪些项目目录。
+
+- `workspace_directories`：推荐字段，支持多个目录
+- `search_directory`：`fix_bugs` 的旧字段兼容兜底
+- 如果两个都不传：默认使用当前 Coding IDE 所在工作目录
+
+`workspace_directories` 如果传入，必须是绝对路径数组，例如：
+
 ```json
-// 批量修复指定编号的bug
-{"bug_ids": ["BUG-001", "BUG-002", "BUG-003"], "resolution_summary": "已修复内存泄漏问题"}
-
-// 批量修复编号范围的bug（第7-10条）
-{"start_index": 7, "end_index": 10}
+{
+  "workspace_directories": [
+    "E:/project/web",
+    "E:/project/server"
+  ]
+}
 ```
 
-### 3. update_bug_status - 更新bug状态
+项目阅读缓存规则：
 
-更新bug状态或验证bug是否修复。
+- 如果工作目录根下已经存在 `gsy-fix-read.md`，工具会直接复用
+- 如果文件不存在，或者传了 `refresh_project_read=true`，工具才会重新阅读项目并生成文档
 
-**参数：**
-- `bug_id` (必填): 字符串，bug编号
-- `status` (可选): 字符串，新状态（处理中/已修复待验证/无法复现/需人工确认）
-- `verify_fixed` (可选): 布尔值，验证bug是否已修复
-- `verification_result` (可选): 字符串，验证结果备注
-- `resolution_summary` (可选): 字符串，解决方案摘要
+## Trae 调用模板
 
-**使用示例：**
-```json
-// 更新bug状态
-{"bug_id": "BUG-001", "status": "处理中"}
+下面这些内容可以直接复制到 Trae 输入框里使用。示例默认按索引调用，也就是使用 `start_index` 和 `end_index`。
 
-// 验证bug修复（需先设置为"已修复待验证"状态）
-{"bug_id": "BUG-001", "verify_fixed": true, "verification_result": "验证通过，问题已解决"}
+### 1. 修复单条 Bug
+
+```text
+调用 fix_bugs，处理第 3 到第 3 条 bug。
+workspace_directories:
+- E:/project/web
+- E:/project/server
 ```
 
-### 4. check_duplicate_bugs - 检查重复bug
+### 2. 批量修复连续 Bug
 
-通过文本相似度分析检测重复bug，并自动在备注列添加提示。
-
-**参数：**
-- `threshold` (可选): 数字(0-1)，相似度阈值，默认0.7
-- `auto_mark` (可选): 布尔值，是否自动标记重复，默认true
-
-**使用示例：**
-```json
-// 检测重复bug并自动标记
-{"auto_mark": true}
-
-// 仅检测不标记，使用更高相似度阈值
-{"threshold": 0.8, "auto_mark": false}
+```text
+调用 fix_bugs，处理第 3 到第 5 条 bug。
+workspace_directories:
+- E:/project/web
+- E:/project/server
 ```
 
-**功能说明：**
-- 使用Jaccard相似度和词重叠算法进行文本比较
-- 比较字段包括：标题、描述、复现步骤、预期结果、实际结果、功能模块
-- 对于重复组，除第一个bug外，其余bug的备注列会添加："该bug与第xx条bug一样"
+### 3. 只分析，不修改代码
 
-## 标准化输出字段
+```text
+调用 analyze_bug，分析第 3 到第 3 条 bug。
+workspace_directories:
+- E:/project/web
+- E:/project/server
+```
 
-当前会输出这些核心字段：
+### 4. 强制重新阅读项目
 
-- `bug_id`: bug编号
-- `row_index`: 表格行索引
-- `title`: bug标题/描述
-- `module`: 功能模块
-- `priority`: 优先级
-- `status`: 解决状态
-- `created_at`: 提交时间
-- `resolved_at`: 解决日期
-- `verification_result`: 验证结果
-- `verification_time`: 验证时间
-- `remark`: 备注
+```text
+调用 fix_bugs，处理第 3 到第 3 条 bug。
+workspace_directories:
+- E:/project/web
+- E:/project/server
+refresh_project_read: true
+```
 
-此外仍保留扩展字段：`severity`、`description`、`repro_steps`、`expected_result`、`actual_result`、`assignee`、`attachments`、`updated_at`、`raw_fields`。
+### 5. 不传工作目录，默认使用当前 IDE 目录
 
-## 环境变量
+```text
+调用 fix_bugs，处理第 3 到第 3 条 bug。
+```
 
-### 必填：
+### 6. 旧项目兼容写法
 
-- `FEISHU_APP_ID`: 飞书应用ID
-- `FEISHU_APP_SECRET`: 飞书应用密钥
-- `FEISHU_APP_TOKEN`: 飞书多维表格APP_TOKEN
-- `FEISHU_TABLE_ID`: 飞书多维表格TABLE_ID
+```text
+调用 fix_bugs，处理第 3 到第 3 条 bug。
+search_directory: E:/project/web
+```
 
-### 可选字段映射：
+## 返回字段
 
-- `FEISHU_VIEW_ID`: 视图ID
-- `FEISHU_FIELD_ID`: 编号字段名
-- `FEISHU_FIELD_TITLE`: 标题字段名
-- `FEISHU_FIELD_STATUS`: 状态字段名
-- `FEISHU_FIELD_PRIORITY`: 优先级字段名
-- `FEISHU_FIELD_MODULE`: 模块字段名
-- `FEISHU_FIELD_CREATED_AT`: 创建时间字段名
-- `FEISHU_FIELD_RESOLVED_AT`: 解决时间字段名
-- `FEISHU_FIELD_VERIFICATION_RESULT`: 验证结果字段名
-- `FEISHU_FIELD_VERIFICATION_TIME`: 验证时间字段名
-- `FEISHU_FIELD_COMMENT`: 评论字段名
-- `FEISHU_FIELD_REMARK`: 备注字段名
+标准化后的 Bug 字段包括：
 
-### 默认字段映射：
+- `bug_id`
+- `row_index`
+- `title`
+- `module`
+- `priority`
+- `status`
+- `created_at`
+- `resolved_at`
+- `verification_result`
+- `verification_time`
+- `remark`
 
-如果不填写上述字段映射，程序会默认按这套中文表头查找：
+## 配置说明
+
+必填环境变量：
+
+- `FEISHU_APP_ID`
+- `FEISHU_APP_SECRET`
+- `FEISHU_APP_TOKEN`
+- `FEISHU_TABLE_ID`
+
+可选环境变量：
+
+- `FEISHU_VIEW_ID`
+- `FEISHU_FIELD_ID`
+- `FEISHU_FIELD_TITLE`
+- `FEISHU_FIELD_STATUS`
+- `FEISHU_FIELD_PRIORITY`
+- `FEISHU_FIELD_MODULE`
+- `FEISHU_FIELD_CREATED_AT`
+- `FEISHU_FIELD_RESOLVED_AT`
+- `FEISHU_FIELD_VERIFICATION_RESULT`
+- `FEISHU_FIELD_VERIFICATION_TIME`
+- `FEISHU_FIELD_COMMENT`
+- `FEISHU_FIELD_REMARK`
+
+字段映射示例：
 
 ```env
 FEISHU_FIELD_ID=编号
-FEISHU_FIELD_TITLE=Bug问题描述
+FEISHU_FIELD_TITLE=Bug标题/描述
 FEISHU_FIELD_STATUS=解决状态
 FEISHU_FIELD_PRIORITY=优先级
-FEISHU_FIELD_MODULE=功能模块
-FEISHU_FIELD_CREATED_AT=提交时间
-FEISHU_FIELD_RESOLVED_AT=解决日期
+FEISHU_FIELD_MODULE=所属模块
+FEISHU_FIELD_CREATED_AT=创建时间
+FEISHU_FIELD_RESOLVED_AT=解决时间
 FEISHU_FIELD_VERIFICATION_RESULT=验证结果
 FEISHU_FIELD_VERIFICATION_TIME=验证时间
 FEISHU_FIELD_COMMENT=备注
 FEISHU_FIELD_REMARK=备注
 ```
 
-## 启动
+备注字段优先级：
+
+1. `FEISHU_FIELD_REMARK`
+2. `FEISHU_FIELD_COMMENT`
+
+## 运行方式
 
 ```bash
 npm install
@@ -179,10 +238,3 @@ npm start
 ```bash
 npx tsx src/index.ts
 ```
-
-## 支持的状态值
-
-- `处理中`: bug正在处理
-- `已修复待验证`: bug已修复，等待验证
-- `无法复现`: 无法复现该bug
-- `需人工确认`: 验证通过，需人工最终确认

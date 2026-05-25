@@ -15,126 +15,134 @@ export function buildErrorResponse(
   error: ToolError,
   data: null = null
 ): ToolResponse<null> {
-  const enhancedError = enhanceErrorWithSuggestions(error);
-  
   return {
     ok: false,
     data,
-    error: enhancedError,
+    error: enhanceErrorWithSuggestions(error),
     source_metadata: getSourceMetadata(config)
   };
 }
 
+export function getRemarkFieldName(config: AppConfig): string | undefined {
+  return config.fieldMapping.remark || config.fieldMapping.comment;
+}
+
+export function appendRemark(existing: unknown, remark: string): string {
+  const normalizedExisting = typeof existing === "string" ? existing.trim() : "";
+  if (!normalizedExisting) {
+    return remark;
+  }
+
+  return `${normalizedExisting}\n\n---\n\n${remark}`;
+}
+
 function enhanceErrorWithSuggestions(error: ToolError): ToolError {
-  const errorEnhancements: Record<string, { suggestions: string[]; recoveryGuide: string[]; details?: string }> = {
+  const errorEnhancements: Record<
+    string,
+    { suggestions: string[]; recoveryGuide: string[]; details?: string }
+  > = {
     AUTH_ERROR: {
       suggestions: [
-        "请检查飞书应用的APP_ID和APP_SECRET是否正确",
-        "确认应用已获得正确的权限范围",
-        "检查网络连接是否正常"
+        "确认 FEISHU_APP_ID 和 FEISHU_APP_SECRET 是否正确。",
+        "检查当前飞书应用是否仍然可用且具备表格访问权限。",
+        "确认租户授权和访问令牌没有过期。"
       ],
       recoveryGuide: [
-        "登录飞书开发者后台",
-        "进入应用管理页面",
-        "确认APP_ID和APP_SECRET无误",
-        "检查应用状态是否为已启用",
-        "确认权限配置包含多维表格读写权限"
+        "检查 .env 或运行环境中的飞书凭证配置。",
+        "在飞书后台确认应用权限和表格权限。",
+        "重新启动 MCP 服务后再重试。 "
       ],
-      details: "飞书API认证失败，可能是凭证错误或权限不足"
+      details: "飞书 API 鉴权失败。"
     },
     NOT_FOUND: {
       suggestions: [
-        "请确认bug_id是否正确",
-        "检查bug是否已被删除",
-        "尝试使用search_bugs工具搜索相关bug"
+        "确认 bug_id 是否正确。",
+        "先用 list_bugs 查看当前可访问的 bug 列表。",
+        "确认该 bug 没有被删除或移出当前视图。"
       ],
       recoveryGuide: [
-        "使用list_bugs工具查看所有bug列表",
-        "使用search_bugs工具通过关键词搜索",
-        "确认bug_id无误后重试"
+        "调用 list_bugs 确认 bug 是否存在。",
+        "检查 FEISHU_VIEW_ID 是否筛掉了目标记录。",
+        "确认字段映射中的编号列与表格一致。"
       ],
-      details: "未找到指定的bug记录"
+      details: "未找到指定的 bug 记录。"
     },
     CONFIG_ERROR: {
       suggestions: [
-        "检查环境变量配置是否完整",
-        "确认字段映射配置正确",
-        "验证多维表格字段名称是否匹配"
+        "检查必填环境变量是否完整。",
+        "确认字段名称与飞书多维表格中的列名一致。",
+        "确认备注字段或评论字段至少配置了一个。"
       ],
       recoveryGuide: [
-        "查看.env文件配置",
-        "确认FEISHU_APP_ID、FEISHU_APP_SECRET、FEISHU_APP_TOKEN、FEISHU_TABLE_ID已设置",
-        "检查字段映射配置是否与多维表格字段名称一致"
+        "核对 .env 中的 FEISHU_* 配置。",
+        "确认 FEISHU_FIELD_STATUS、FEISHU_FIELD_REMARK、FEISHU_FIELD_COMMENT 等字段映射。",
+        "保存配置后重启 MCP 服务。"
       ],
-      details: "MCP配置不完整或不正确"
+      details: "MCP 配置不完整或与表格结构不匹配。"
     },
     INVALID_RANGE: {
       suggestions: [
-        "确保start_index小于等于end_index",
-        "确认请求范围在有效数据范围内",
-        "使用list_bugs工具查看总bug数量"
+        "确认 start_index 小于或等于 end_index。",
+        "先用 list_bugs 查看当前 bug 总数。",
+        "不要传入超出当前列表范围的索引。"
       ],
       recoveryGuide: [
-        "调用list_bugs工具获取总bug数量",
-        "确保请求范围在1到总数量之间",
-        "确保起始索引小于等于结束索引"
+        "先调用 list_bugs 获取总数。",
+        "调整 start_index 和 end_index 后重试。"
       ],
-      details: "请求的索引范围无效"
+      details: "请求的 bug 索引范围无效。"
     },
     VALIDATION_ERROR: {
       suggestions: [
-        "检查输入参数格式是否正确",
-        "确认必填参数已提供",
-        "验证参数值是否在允许范围内"
+        "检查入参是否完整。",
+        "确认状态值是否在允许范围内。",
+        "确认闭环所需的备注信息是否完整。"
       ],
       recoveryGuide: [
-        "查看工具的inputSchema定义",
-        "确认所有必填参数已正确提供",
-        "确保参数类型和格式符合要求"
+        "对照工具的 inputSchema 检查参数。",
+        "补齐缺失字段后重新调用工具。"
       ],
-      details: "输入参数验证失败"
+      details: "参数校验失败。"
     },
     WRITE_ERROR: {
       suggestions: [
-        "检查网络连接是否正常",
-        "确认用户有修改该bug的权限",
-        "验证字段值是否符合多维表格约束"
+        "确认当前飞书应用具有写入权限。",
+        "确认目标字段没有被删除、锁定或改名。",
+        "检查网络和飞书 API 服务状态。"
       ],
       recoveryGuide: [
-        "检查网络连接状态",
-        "确认飞书应用有写入权限",
-        "检查字段值是否符合数据类型要求",
-        "查看飞书多维表格的字段约束"
+        "先用 list_bugs 验证读权限是否正常。",
+        "确认状态列和备注列都允许写入。",
+        "排除权限或网络问题后再重试。"
       ],
-      details: "写入操作失败，可能是权限问题或数据格式错误"
+      details: "写入飞书多维表格失败。"
     },
     UNKNOWN_ERROR: {
       suggestions: [
-        "稍后重试操作",
-        "检查网络连接",
-        "查看相关日志获取更多信息"
+        "查看错误栈定位具体失败点。",
+        "先确认配置、权限和网络都正常。",
+        "缩小调用范围后再次复现。"
       ],
       recoveryGuide: [
-        "等待片刻后重试",
-        "检查网络连接状态",
-        "查看服务器日志获取详细错误信息",
-        "如果问题持续存在，请联系管理员"
+        "记录当前入参与错误信息。",
+        "重新启动服务后重试。",
+        "如问题持续，结合日志进一步排查。"
       ],
-      details: "发生未知错误"
+      details: "发生了未归类的异常。"
     }
   };
 
   const enhancement = errorEnhancements[error.code];
-  if (enhancement) {
-    return {
-      ...error,
-      suggestions: error.suggestions ?? enhancement.suggestions,
-      details: error.details ?? enhancement.details,
-      recovery_guide: error.recovery_guide ?? enhancement.recoveryGuide
-    };
+  if (!enhancement) {
+    return error;
   }
-  
-  return error;
+
+  return {
+    ...error,
+    suggestions: error.suggestions ?? enhancement.suggestions,
+    details: error.details ?? enhancement.details,
+    recovery_guide: error.recovery_guide ?? enhancement.recoveryGuide
+  };
 }
 
 export function toToolPayload<T>(result: ToolResponse<T>) {
@@ -158,24 +166,24 @@ export function classifyReadError(error: unknown): ToolError {
     if (error.status === 401 || error.status === 403) {
       return {
         code: "AUTH_ERROR",
-        message: `认证失败: ${error.message}`,
-        details: `飞书API返回状态码: ${error.status}, 错误码: ${error.responseCode}`
+        message: `飞书鉴权失败：${error.message}`,
+        details: `飞书 API 状态码：${error.status}，错误码：${error.responseCode}`
       };
     }
 
     if (error.status === 400) {
       return {
         code: "VALIDATION_ERROR",
-        message: `请求参数错误: ${error.message}`,
-        details: `飞书API返回状态码: ${error.status}, 错误码: ${error.responseCode}`
+        message: `请求参数无效：${error.message}`,
+        details: `飞书 API 状态码：${error.status}，错误码：${error.responseCode}`
       };
     }
 
     if (error.status === 404) {
       return {
         code: "NOT_FOUND",
-        message: `资源未找到: ${error.message}`,
-        details: `飞书API返回状态码: ${error.status}, 错误码: ${error.responseCode}`
+        message: `目标资源不存在：${error.message}`,
+        details: `飞书 API 状态码：${error.status}，错误码：${error.responseCode}`
       };
     }
   }
@@ -192,24 +200,24 @@ export function classifyWriteError(error: unknown): ToolError {
     if (error.status === 401 || error.status === 403) {
       return {
         code: "AUTH_ERROR",
-        message: `认证失败: ${error.message}`,
-        details: `飞书API返回状态码: ${error.status}, 错误码: ${error.responseCode}`
+        message: `飞书鉴权失败：${error.message}`,
+        details: `飞书 API 状态码：${error.status}，错误码：${error.responseCode}`
       };
     }
 
     if (error.status === 400) {
       return {
         code: "VALIDATION_ERROR",
-        message: `请求参数错误: ${error.message}`,
-        details: `飞书API返回状态码: ${error.status}, 错误码: ${error.responseCode}`
+        message: `请求参数无效：${error.message}`,
+        details: `飞书 API 状态码：${error.status}，错误码：${error.responseCode}`
       };
     }
 
     if (error.status === 404) {
       return {
         code: "NOT_FOUND",
-        message: `资源未找到: ${error.message}`,
-        details: `飞书API返回状态码: ${error.status}, 错误码: ${error.responseCode}`
+        message: `目标资源不存在：${error.message}`,
+        details: `飞书 API 状态码：${error.status}，错误码：${error.responseCode}`
       };
     }
   }

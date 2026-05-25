@@ -1,14 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { FeishuFieldMapping, SourceMetadata } from "./types.js";
-
-const BUG_STATUS_VALUES = [
-  "\u5904\u7406\u4e2d",
-  "\u5df2\u4fee\u590d\u5f85\u9a8c\u8bc1",
-  "\u65e0\u6cd5\u590d\u73b0",
-  "\u9700\u4eba\u5de5\u786e\u8ba4",
-  "\u5f85\u5ba1\u67e5"
-] as const;
+import { BUG_STATUS_VALUES, FeishuFieldMapping, SourceMetadata } from "./types.js";
 
 type EnvConfig = {
   appId: string;
@@ -30,12 +22,12 @@ const REQUIRED_ENV_VARS = [
 
 const DEFAULT_FIELD_NAMES = {
   bugId: "编号",
-  title: "Bug问题描述",
+  title: "Bug标题/描述",
   status: "解决状态",
   priority: "优先级",
-  module: "功能模块",
-  createdAt: "提交时间",
-  resolvedAt: "解决日期",
+  module: "所属模块",
+  createdAt: "创建时间",
+  resolvedAt: "解决时间",
   verificationResult: "验证结果",
   verificationTime: "验证时间",
   comment: "备注",
@@ -134,9 +126,7 @@ export function getSourceMetadata(config: EnvConfig): SourceMetadata {
     app_token: config.appToken,
     table_id: config.tableId,
     view_id: config.viewId,
-    sort_rule: config.viewId
-      ? "view_order"
-      : "priority_desc_then_created_at_asc"
+    sort_rule: config.viewId ? "view_order" : "priority_desc_then_created_at_asc"
   };
 }
 

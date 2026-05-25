@@ -3,9 +3,11 @@ import { z } from "zod";
 import { AppConfig } from "../config.js";
 import { FeishuBitableClient } from "../feishu/bitable.js";
 import {
+  appendRemark,
   buildErrorResponse,
   buildSuccessResponse,
   classifyWriteError,
+  getRemarkFieldName,
   toToolPayload
 } from "./helpers.js";
 import { FeishuRecord, NormalizedBug } from "../types.js";
@@ -18,10 +20,17 @@ export function registerCheckDuplicateBugsTool(
   server.registerTool(
     "check_duplicate_bugs",
     {
-      description: "Find duplicate bugs by comparing text similarity. For each group of duplicates, all bugs except the first one will have a remark added indicating it's a duplicate of the first bug.",
+      description:
+        "通过文本相似度查找重复 bug。对于重复组中的后续 bug，可自动在备注中标记其对应的主 bug。",
       inputSchema: {
-        threshold: z.number().min(0).max(1).optional().default(0.7).describe("Similarity threshold (0-1), higher = stricter match"),
-        auto_mark: z.boolean().optional().default(true).describe("Whether to automatically mark duplicates with remark")
+        threshold: z
+          .number()
+          .min(0)
+          .max(1)
+          .optional()
+          .default(0.7)
+          .describe("相似度阈值 (0-1)，越高越严格"),
+        auto_mark: z.boolean().optional().default(true).describe("是否自动在备注中标记重复 bug")
       }
     },
     async ({ threshold = 0.7, auto_mark = true }) => {
@@ -29,15 +38,15 @@ export function registerCheckDuplicateBugsTool(
         const { items } = await bitableClient.listAllRecords();
         const bugs = bitableClient.normalizeAndOrderBugs(items);
         const bugIdToRecord = new Map<string, FeishuRecord>();
-        
-        items.forEach(record => {
+
+        items.forEach((record) => {
           const bug = bitableClient.normalizeBug(record);
           bugIdToRecord.set(bug.bug_id, record);
         });
 
         const duplicateGroups = findDuplicateGroups(bugs, threshold);
 
-        let updateResults: {
+        const updateResults: {
           bug_id: string;
           row_index: number;
           title: string | null;
@@ -50,13 +59,13 @@ export function registerCheckDuplicateBugsTool(
         if (auto_mark) {
           for (const group of duplicateGroups) {
             if (group.length < 2) continue;
-            
+
             const firstBug = group[0];
-            
+
             for (let i = 1; i < group.length; i++) {
               const duplicateBug = group[i];
               const record = bugIdToRecord.get(duplicateBug.bug_id);
-              
+
               if (!record) {
                 updateResults.push({
                   bug_id: duplicateBug.bug_id,
@@ -71,7 +80,7 @@ export function registerCheckDuplicateBugsTool(
               }
 
               try {
-                const remarkField = config.fieldMapping.remark || config.fieldMapping.comment;
+                const remarkField = getRemarkFieldName(config);
                 if (!remarkField) {
                   updateResults.push({
                     bug_id: duplicateBug.bug_id,
@@ -85,11 +94,11 @@ export function registerCheckDuplicateBugsTool(
                   continue;
                 }
 
-                const existingRemark = record.fields[remarkField];
-                const normalizedExisting = typeof existingRemark === "string" ? existingRemark : "";
-                const duplicateNote = `该bug与第${firstBug.row_index}条bug一样`;
-                
-                if (normalizedExisting.includes(duplicateNote)) {
+                const duplicateNote = `该 bug 与第 ${firstBug.row_index} 条 bug 重复（主 bug: ${firstBug.bug_id}）。`;
+                const existingRemark =
+                  typeof record.fields[remarkField] === "string" ? String(record.fields[remarkField]) : "";
+
+                if (existingRemark.includes(duplicateNote)) {
                   updateResults.push({
                     bug_id: duplicateBug.bug_id,
                     row_index: duplicateBug.row_index,
@@ -102,12 +111,8 @@ export function registerCheckDuplicateBugsTool(
                   continue;
                 }
 
-                const newRemark = [normalizedExisting, duplicateNote]
-                  .filter(Boolean)
-                  .join("\n");
-
                 await bitableClient.updateRecord(record.record_id, {
-                  [remarkField]: newRemark
+                  [remarkField]: appendRemark(record.fields[remarkField], duplicateNote)
                 });
 
                 updateResults.push({
@@ -134,9 +139,9 @@ export function registerCheckDuplicateBugsTool(
         } else {
           for (const group of duplicateGroups) {
             if (group.length < 2) continue;
-            
+
             const firstBug = group[0];
-            
+
             for (let i = 1; i < group.length; i++) {
               const duplicateBug = group[i];
               updateResults.push({
@@ -151,8 +156,8 @@ export function registerCheckDuplicateBugsTool(
           }
         }
 
-        const markedCount = updateResults.filter(r => r.marked).length;
-        const notMarkedCount = updateResults.filter(r => !r.marked).length;
+        const markedCount = updateResults.filter((result) => result.marked).length;
+        const notMarkedCount = updateResults.filter((result) => !result.marked).length;
 
         return toToolPayload(
           buildSuccessResponse(config, {
@@ -160,13 +165,13 @@ export function registerCheckDuplicateBugsTool(
             total_duplicates: updateResults.length,
             marked_count: markedCount,
             not_marked_count: notMarkedCount,
-            duplicate_groups: duplicateGroups.map(group => ({
+            duplicate_groups: duplicateGroups.map((group) => ({
               primary_bug: {
                 bug_id: group[0].bug_id,
                 row_index: group[0].row_index,
                 title: group[0].title
               },
-              duplicates: group.slice(1).map(bug => ({
+              duplicates: group.slice(1).map((bug) => ({
                 bug_id: bug.bug_id,
                 row_index: bug.row_index,
                 title: bug.title
@@ -209,15 +214,15 @@ function findDuplicateGroups(bugs: NormalizedBug[], threshold: number): Normaliz
     }
   }
 
-  return groups.sort((a, b) => b.length - a.length);
+  return groups.sort((left, right) => right.length - left.length);
 }
 
 function calculateSimilarity(bug1: NormalizedBug, bug2: NormalizedBug): number {
   const text1 = getBugTextContent(bug1);
   const text2 = getBugTextContent(bug2);
 
-  const words1 = text1.toLowerCase().split(/\s+/).filter(w => w.length > 1);
-  const words2 = text2.toLowerCase().split(/\s+/).filter(w => w.length > 1);
+  const words1 = text1.toLowerCase().split(/\s+/).filter((word) => word.length > 1);
+  const words2 = text2.toLowerCase().split(/\s+/).filter((word) => word.length > 1);
 
   if (words1.length === 0 || words2.length === 0) {
     return 0;
@@ -225,28 +230,33 @@ function calculateSimilarity(bug1: NormalizedBug, bug2: NormalizedBug): number {
 
   const set1 = new Set(words1);
   const set2 = new Set(words2);
-  
-  const intersection = [...set1].filter(word => set2.has(word)).length;
+
+  const intersection = [...set1].filter((word) => set2.has(word)).length;
   const union = set1.size + set2.size - intersection;
-  
+
   if (union === 0) return 0;
-  
+
   const jaccard = intersection / union;
-  
   const overlap = calculateOverlap(words1, words2);
-  
   return (jaccard + overlap) / 2;
 }
 
 function getBugTextContent(bug: NormalizedBug): string {
-  const fields = [bug.title, bug.description, bug.repro_steps, bug.expected_result, bug.actual_result, bug.module];
-  return fields.filter(f => f != null).join(" ");
+  const fields = [
+    bug.title,
+    bug.description,
+    bug.repro_steps,
+    bug.expected_result,
+    bug.actual_result,
+    bug.module
+  ];
+  return fields.filter((field) => field != null).join(" ");
 }
 
 function calculateOverlap(words1: string[], words2: string[]): number {
   const commonWords = new Set<string>();
   let matches = 0;
-  
+
   for (const word1 of words1) {
     for (const word2 of words2) {
       if (word1 === word2 || word1.includes(word2) || word2.includes(word1)) {
@@ -257,6 +267,6 @@ function calculateOverlap(words1: string[], words2: string[]): number {
       }
     }
   }
-  
+
   return matches / Math.max(words1.length, words2.length);
 }

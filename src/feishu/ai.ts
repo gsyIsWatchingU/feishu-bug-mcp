@@ -21,7 +21,7 @@ export class FeishuAiClient {
 
   async expandBugDescription(bugTitle: string, bugDescription?: string): Promise<string> {
     const prompt = this.buildExpandPrompt(bugTitle, bugDescription);
-    
+
     try {
       const payload = await this.request<AiResponse>(
         `${this.config.baseUrl}/ai/question_and_answer/v1/ask`,
@@ -34,23 +34,32 @@ export class FeishuAiClient {
       );
 
       if (payload.code !== 0 || !payload.data?.answer) {
-        throw new Error(payload.msg || "AI扩写请求失败");
+        throw new Error(payload.msg || "AI 扩写 bug 描述失败");
       }
 
       const expanded = payload.data.answer.trim();
       return this.trimResponse(expanded);
     } catch (error) {
-      console.warn(`AI扩写失败，使用原始描述: ${error instanceof Error ? error.message : "未知错误"}`);
+      console.warn(
+        `AI 扩写失败，回退到原始描述：${error instanceof Error ? error.message : "未知错误"}`
+      );
       return bugDescription || bugTitle;
     }
   }
 
   private buildExpandPrompt(title: string, description?: string): string {
-    const basePrompt = "请帮我详细扩写以下bug描述，使其更加完整和清晰：\n\n";
+    const basePrompt = "请帮我详细扩写以下 bug 描述，使其更完整、清晰，方便后续定位和修复。\n\n";
     const titlePart = `标题：${title}\n`;
     const descPart = description ? `描述：${description}\n` : "";
-    const instruction = "\n请按照以下结构扩写：\n1. 问题概述\n2. 可能的原因分析\n3. 影响范围\n4. 建议的修复方向";
-    
+    const instruction = [
+      "",
+      "请输出结构化结果，并尽量包含：",
+      "1. 问题现象",
+      "2. 可能的触发条件",
+      "3. 影响范围",
+      "4. 建议排查方向"
+    ].join("\n");
+
     return basePrompt + titlePart + descPart + instruction;
   }
 
@@ -59,7 +68,7 @@ export class FeishuAiClient {
     if (response.length <= maxLength) {
       return response;
     }
-    return response.substring(0, maxLength) + "...（内容已截断）";
+    return response.substring(0, maxLength) + "...（已截断）";
   }
 
   private async request<T>(url: string, init: RequestInit): Promise<T> {
@@ -100,7 +109,8 @@ export class FeishuAiClient {
       return undefined;
     }
 
-    const message = (payload as { msg?: unknown; message?: unknown }).msg ??
+    const message =
+      (payload as { msg?: unknown; message?: unknown }).msg ??
       (payload as { msg?: unknown; message?: unknown }).message;
     return typeof message === "string" && message.trim().length > 0 ? message : undefined;
   }

@@ -1,9 +1,12 @@
-export type BugStatus =
-  | "处理中"
-  | "已修复待验证"
-  | "无法复现"
-  | "需人工确认"
-  | "待审查";
+export const BUG_STATUS_VALUES = [
+  "处理中",
+  "已修复待验证",
+  "无法复现",
+  "需人工确认",
+  "待审核"
+] as const;
+
+export type BugStatus = (typeof BUG_STATUS_VALUES)[number];
 
 export type FeishuFieldMapping = {
   bugId: string;
